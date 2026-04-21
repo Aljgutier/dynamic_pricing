@@ -6,3 +6,4 @@ tm_model_log.txt
 __pycache__/
 .DS_Store
 .env
+x_old/

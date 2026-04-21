@@ -7,6 +7,7 @@
 - truncated normal_pdf
 - truncated_normal_mean
 - demand_lognormal_pdf
+- demand_sample
 """
 
 import math
@@ -19,7 +20,7 @@ from scipy.stats import truncnorm, norm
 ################################
 def truncated_normal_pdf(x, m, sigma, lower_limit, upper_limit):
     """
-    Truncated normal probability distribution. Receives x, mean, and sigma (stabdard deviatin), lower_limit, upper_limit, and returns the corresponding probability for point(s) x.
+    Truncated normal probability distribution. Receives x, mean, and sigma (standard deviatin), lower_limit, upper_limit, and returns the corresponding probability for point(s) x.
 
     This truncated normal PDF uses underlying Normal parameters (m, sigma). Matches PyMC pm.TruncatedNormal(mu=m, sigma=sigma, lower=lower_limit).
 
@@ -27,8 +28,8 @@ def truncated_normal_pdf(x, m, sigma, lower_limit, upper_limit):
         x : float or arraylike
            Points to evaluate the corresponding truncated probability.  Must satisfy x > lower_limit and x < upper_limit, otherwise returns 0.
 
-        m : numeric
-            mean
+        m : location offset, the mean of the underlying (non truncated normal)
+
 
         sigma: mumeric
             standard deviation
@@ -240,11 +241,7 @@ def demand_lognormal_pdf(d, a, v, p, CV):
     demand model with multiplicative noise.
 
     Model:
-        log(D) is Normal, therefore D is logNormal.LogNormal is the distribution over D (not log D). Note that logNormal includes 1/d, Jacobiann normalization factor.
-
-        log(D) ~ Normal( log(a) - v * log(p), sigma_log^2 )
-        ⇔
-        D ~ LogNormal( log(a) - v * log(p), sigma_log^2 )
+        log(D) is Normal, therefore D is logNormal. LogNormal is the distribution over D . Note that logNormal includes 1/d, Jacobiann normalization factor.
 
     This function returns the density in linear space:
         f_D(d)
@@ -256,7 +253,7 @@ def demand_lognormal_pdf(d, a, v, p, CV):
         p (float): Price at which demand is evaluated.
         CV (float): Coeficient of Variation, given be
         std/mean (linear-space). This variable is transformed
-        into sigma_log = sqrt(1 + CV^2)
+        into sigma_log = sqrt(ln(1 + CV^2))
 
     Returns:
         array-like: LogNormal density values of demand evaluated at d.
@@ -264,10 +261,30 @@ def demand_lognormal_pdf(d, a, v, p, CV):
 
     sigma_log = np.sqrt(np.log1p(CV**2))  # sqrt(ln( 1 + CV^2 ))
 
-    mu_log = np.log(a) - v * np.log(p)
+    mu_log = np.log(a) - v * np.log(p)  # this is mu_i = ln (a p^ -v)
     d_log = np.log(d)
 
     density = (1 / (d * np.sqrt(2 * np.pi) * sigma_log)) * np.exp(
         -0.5 * ((d_log - mu_log) / sigma_log) ** 2
     )
     return density
+
+
+def demand_sample(
+    p: float, a: float, v: float, sigma_log: float, size: int = 1
+) -> np.ndarray:
+    """Demand with multiplicative noise.
+
+    Args:
+        p (float): price
+        a (float): demand multiplier constant
+        v (float): price elasticity of demand
+        sigma_log (float): standard deviation of the log-normal distribution
+        size (int, optional): Then number of samples to return. Defaults to 1.
+
+    Returns:
+        float: linear demand sample
+    """
+
+    mu_log = np.log(a) - v * np.log(p)
+    return np.exp(mu_log + np.random.normal(0, sigma_log, size=size))
