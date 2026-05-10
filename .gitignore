@@ -7,3 +7,5 @@ __pycache__/
 .DS_Store
 .env
 x_old/
+README_pdf_notes.md
+pdf_tex_md/
