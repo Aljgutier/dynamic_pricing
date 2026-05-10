@@ -48,9 +48,9 @@ To conclude, the insights for modeling the posterior demand statistics and creat
 # 2. Microeconomic Demand Model
 In microeconomics, the constant elasticity of demand function, $D(p)$ [8,11] yields the quantity demanded at price, $p$ and elastiticy $v$.
 
- $$
+```math
  D(p) = a p^{-v} \tag{1}
- $$ 
+```
 as demand increases, the quantity demanded decreases. For convenience, economists typically write the constant elasticity demand function with a negative sign on the exponent. Therefore, the coefficient in the demand equation represents the absolute value (non-negative magnitude) of the elasticity.
 
 
