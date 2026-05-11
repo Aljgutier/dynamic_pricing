@@ -7,4 +7,4 @@ Included in the repo are
 *  [TS Simulation Results Analysis Notebook](ts_simulation_results_analysis.ipynb)
 *  [Python Probability Utilities](utils_probability.py)
 *  [PyMC Installation Notes](README_PyMC_install.md) 
-*  [Thompson Sampling for Dynamic Pricing Paper](DynamicPricingTS.pdf) 
+*  [Thompson Sampling for Dynamic Pricing Paper](https://aljgutier.github.io/posts/econometrics/DynamicPricingTS.pdf) 
