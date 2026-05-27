@@ -61,13 +61,24 @@ def plot_hdi_width_over_time(
 
         for idata in traces:
             posterior_da = idata.posterior[var]  # posterior variable
-            hdi_da = az.hdi(posterior_da, hdi_prob=hdi_prob)  # compute HDI
+            # hdi_da = az.hdi(posterior_da, hdi_prob=hdi_prob)  # compute HDI
+            hdi_da = az.hdi(posterior_da, hdi_prob)
 
-            try:
-                low = float(hdi_da.sel(hdi="lower").values)
-                high = float(hdi_da.sel(hdi="higher").values)
-            except Exception:
-                vals = np.asarray(hdi_da.to_array().values).ravel()
+            if isinstance(hdi_da, np.ndarray):
+                vals = hdi_da.ravel()
+
+            elif hasattr(hdi_da, "to_array"):  # Dataset case
+                vals = hdi_da.to_array().values.ravel()
+
+            else:  # DataArray case
+                try:
+                    low = float(hdi_da.sel(hdi="lower").values)
+                    high = float(hdi_da.sel(hdi="higher").values)
+                    vals = None
+                except Exception:
+                    vals = hdi_da.values.ravel()
+
+            if vals is not None:
                 low = float(np.min(vals))
                 high = float(np.max(vals))
 
@@ -75,7 +86,7 @@ def plot_hdi_width_over_time(
             widths.append(high - low)
 
             if overlay_mean:
-                means.append(float(posterior_da.mean().values))
+                means.append(float(poster ior_da.mean().item()))
 
         # --- primary HDI width line ---
         line1 = ax.plot(
