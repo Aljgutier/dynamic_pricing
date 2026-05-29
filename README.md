@@ -1,4 +1,4 @@
-# Dynamic Pricing with Thompson Sampling - from theory to practice 
+# Dynamic Pricing and Revenue Optimization
 
 This repo contains notebooks and code for dynamic pricing and revenue optimization
 
