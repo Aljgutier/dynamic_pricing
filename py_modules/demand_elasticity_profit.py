@@ -7,6 +7,7 @@ Public Functions:
 - demand_linear
 - elasticity_linear
 - demand_logit
+- get_demand
 - elasticity_logit
 - profit
 - get_vhat_invumar
@@ -359,6 +360,47 @@ def demand_logit(p, A, a, b, sigma_log=0, size: int = 1):
 
     demand = _demand_logit_raw(p_arr, A, a, b)
     return add_normal_demand_variation(demand, sigma_log)
+
+
+############# get_demand ############
+
+
+def get_demand(demand_type, demand_params, p, sigma_log=0):
+
+    scalar_input = np.isscalar(p)
+
+    if demand_type == "constant_elasticity":
+        d = demand_constant_elasticity(
+            p,
+            demand_params["A"],
+            demand_params["v"],
+            sigma_log=sigma_log,
+        )
+
+    elif demand_type == "linear":
+        d = demand_linear(
+            p,
+            demand_params["A"],
+            demand_params["b"],
+            sigma_log=sigma_log,
+        )
+
+    elif demand_type == "logit":
+        d = demand_logit(
+            p,
+            demand_params["A"],
+            demand_params["a"],
+            demand_params["b"],
+            sigma_log=sigma_log,
+        )
+
+    else:
+        raise ValueError(f"Invalid demand type: {demand_type}")
+
+    if scalar_input:
+        return float(d[0])
+
+    return d
 
 
 ########### Profit ###########

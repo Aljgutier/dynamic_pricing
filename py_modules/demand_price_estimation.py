@@ -26,6 +26,7 @@ if __package__:
         demand_logit,
         demand_constant_elasticity,
         demand_linear,
+        get_demand,
     )
 else:
     # Top-level import (e.g., when py_modules is added to sys.path in notebooks)
@@ -33,6 +34,7 @@ else:
         demand_logit,
         demand_constant_elasticity,
         demand_linear,
+        get_demand,
     )
 
 
@@ -1294,47 +1296,6 @@ def vhat_calculator(model_info, p):
     return vhat
 
 
-# ---------------- get_demand ------------------#
-
-
-def get_demand(demand_type, demand_params, p, sigma_log=0):
-
-    scalar_input = np.isscalar(p)
-
-    if demand_type == "constant_elasticity":
-        d = demand_constant_elasticity(
-            p,
-            demand_params["A"],
-            demand_params["v"],
-            sigma_log=sigma_log,
-        )
-
-    elif demand_type == "linear":
-        d = demand_linear(
-            p,
-            demand_params["A"],
-            demand_params["b"],
-            sigma_log=sigma_log,
-        )
-
-    elif demand_type == "logit":
-        d = demand_logit(
-            p,
-            demand_params["A"],
-            demand_params["a"],
-            demand_params["b"],
-            sigma_log=sigma_log,
-        )
-
-    else:
-        raise ValueError(f"Invalid demand type: {demand_type}")
-
-    if scalar_input:
-        return float(d[0])
-
-    return d
-
-
 # --------------------- select_demand_model ------------------#
 def select_demand_model(
     p,
@@ -1355,26 +1316,23 @@ def select_demand_model(
     b2_lambda_lql_lp=0.0,
     minimum_elasticity=1.0,
     selection_criterion="rss",
-    primary_model_type=None,
     boundary_buffer=0.1,
     Ngrid=500,
+    default_model_type="linear",
+    fallback_model_type="linear",
     tilt_penalty_linear=0.0,
     tilt_penalty_log_level=0.0,
     tilt_penalty_log_log=0.0,
     tilt_penalty_log_quadratic=0.0,
     tilt_penalty_log_quadratic_level=0.0,
-    p_opt_linear_delta_frac_max=0.20,
-    logq_aic_improvement_min=2.0,
-    linear_tilt_error_max=np.inf,
-    linear_tilt_imbalance_max=np.inf,
-    thr_rss_diff_max=np.inf,
     thr_rss_max=np.inf,
+    thr_rss_diff_max=np.inf,
 ):
     """
     Select the best demand model from a set of candidate demand
     estimators.
 
-    Each candidate model is fitted, the implied profit-maximizing
+    Each candxidate model is fitted, the implied profit-maximizing
     price is computed, and the model is scored using the selected
     information criterion (AIC or BIC). Models whose estimated
     optimal price lies within a specified boundary buffer of the
@@ -1424,13 +1382,12 @@ def select_demand_model(
     F : float
         Fixed cost.
 
-    candidate_model_types : list of str
-        Demand-model types to fit and consider during model selection.
 
-        The "linear" model is required because it serves as the
-        reference and safety fallback model.
+    The "linear" model is required because it serves as the
+    diagnostic reference model.
 
-        At least one additional supported model must also be supplied.
+    The default and fallback models are specified separately by
+    default_model_type and fallback_model_type, respectively.
 
         Supported model types are:
             - "linear"
@@ -1441,22 +1398,37 @@ def select_demand_model(
             - "log_quadratic_level"
 
         Examples:
-
             ["linear", "log_quadratic"]
+            ["quadratic", "log_quadratic_level"]
+            ["log_log", "log_quadratic"]
+            ["linear", "quadratic", "log_quadratic_level"]
 
-            ["linear", "log_log"]
+    candidate_model_types : list of str
+        Demand-model types allowed to compete during normal model
+        selection.
 
-            ["linear", "log_log", "log_quadratic"]
+        Models specified by default_model_type and
+        fallback_model_type are fitted automatically even when they
+        are not included in candidate_model_types.
 
-            ["linear", "log_quadratic_level"]
+        The "linear" model is always fitted because it serves as the
+        diagnostic reference model, regardless of whether it is included
+        in candidate_model_types.
 
-        If both "log_log" and "log_quadratic" are present, the
-        log-quadratic model is required to provide sufficient AIC
-        improvement over log-log according to
-        logq_aic_improvement_min.
+        Defaults to "linear".
 
-        If log-quadratic is present without log-log, this additional
-        complexity comparison is not applied.
+    default_model_type : str, optional
+        Model selected when the Linear-reference diagnostics do not
+        permit normal candidate-model selection.
+
+        The default model is fitted automatically and does not need
+        to be included in candidate_model_types.
+
+        If it is included in candidate_model_types, it also
+        participates in normal model selection.
+
+        Defaults to "linear".
+
 
     selection_criteria : {"AIC", "BIC"}, default="AIC"
         Information criterion used for model selection.
@@ -1505,52 +1477,27 @@ def select_demand_model(
         If True, use Huber regression instead of ordinary least
         squares for supported regression models.
 
-    primary_model_type : str or None, optional
-        Optional candidate model to use as the initial model-selection
-        choice instead of selecting the initial winner by the configured
-        fit criterion.
 
-        If None, the initial model is selected normally using
-        selection_criterion.
-
-        If specified, primary_model_type must be included in
-        candidate_model_types and must be a valid fitted model.
-
-        The primary-model override affects only the initial model choice.
-        The existing divergence-from-linear and boundary safeguards are
-        still applied, so the selected model may still fall back to
-        linear.
-
-        Defaults to None.
-
-
-    linear_tilt_error_max : float, optional
-        Maximum allowable low-to-high residual tilt for linear
-        to be accepted as the initial model-selection winner.
-
-        Residual tilt is defined as
-
-            abs(
-                tilt_error_high
-                - tilt_error_low
-            )
-
-        This measures the difference between the weighted mean
-        residuals at the high- and low-price ends.
+    thr_rss_max : float, optional
+        Maximum allowable total log-demand RSS for the linear
+        reference model before challenger models are permitted.
 
         Defaults to np.inf, which disables this guard.
 
-    linear_tilt_imbalance_max : float, optional
-        Maximum allowable imbalance between the magnitudes of the
-        low- and high-price residual tilt for linear to be accepted
-        as the initial model-selection winner. Defined as
+    thr_rss_diff_max : float, optional
+        Maximum allowable absolute difference between the
+        high-price and low-price log-demand RSS of the linear
+        reference model before challenger models are permitted.
+
+        Defined as
 
             abs(
-                abs(tilt_error_high)
-                - abs(tilt_error_low)
+                rss_log_high
+                - rss_log_low
             )
 
-        Defaults to np.inf, which disables this guard.
+    Defaults to np.inf, which disables this guard.
+
 
     Returns
     -------
@@ -1565,9 +1512,6 @@ def select_demand_model(
 
     if thr_rss_diff_max < 0:
         raise ValueError("thr_rss_diff_max must be non-negative.")
-
-    if thr_rss_max < 0:
-        raise ValueError("thr_rss_max must be non-negative.")
 
     if (ridge_cv_linear or ridge_cv_q or ridge_cv_lql) and huber:
 
@@ -1644,25 +1588,12 @@ def select_demand_model(
             "Unsupported candidate model type(s): " f"{sorted(unsupported_model_types)}"
         )
 
-    # Linear is required as the diagnostic reference model.
-    if "linear" not in candidate_model_types:
-        raise ValueError("candidate_model_types must include 'linear'.")
+    # ---------- Validate models ----------#
+    if default_model_type not in supported_model_types:
+        raise ValueError(f"Unknown default_model_type: {default_model_type}")
 
-    # Quadratic is required as the conservative default model.
-    if "quadratic" not in candidate_model_types:
-        raise ValueError("candidate_model_types must include 'quadratic'.")
-
-    # ---------- Validate primary model ----------#
-
-    if (
-        primary_model_type is not None
-        and primary_model_type not in candidate_model_types
-    ):
-        raise ValueError(
-            "primary_model_type must be None or one of "
-            "candidate_model_types. "
-            f"Got primary_model_type={primary_model_type!r}."
-        )
+    if fallback_model_type not in supported_model_types:
+        raise ValueError(f"Unknown fallback_model_type: {fallback_model_type}")
 
     # ---------- Ensure prices are above unit cost ----------#
 
@@ -1685,9 +1616,54 @@ def select_demand_model(
     log_log_vhat = np.nan
     log_models_vhat_delta = np.nan
 
+    # ------- models to fit ----------#
+
+    models_to_fit = list(
+        dict.fromkeys(
+            candidate_model_types
+            + [
+                "linear",
+                default_model_type,
+                fallback_model_type,
+            ]
+        )
+    )
+
+    # ---------- Validate number of unique prices ----------#
+
+    n_unique_prices = len(np.unique(p))
+
+    min_unique_prices = {
+        "linear": 2,
+        "log_level": 2,
+        "log_log": 2,
+        "quadratic": 3,
+        "log_quadratic": 3,
+        "log_quadratic_level": 3,
+        "log_quadratic_level_lp": 3,
+    }
+
+    insufficient_price_models = {
+        model_type: min_unique_prices[model_type]
+        for model_type in models_to_fit
+        if n_unique_prices < min_unique_prices[model_type]
+    }
+
+    if insufficient_price_models:
+
+        requirements = ", ".join(
+            f"'{model_type}' requires {n_required}"
+            for model_type, n_required in insufficient_price_models.items()
+        )
+
+        raise ValueError(
+            f"Insufficient unique prices for demand-model fitting: "
+            f"{n_unique_prices} unique prices were received. "
+            f"{requirements}."
+        )
     # --------- Fit candidate models and compute diagnostics ---------#
 
-    for model_type in candidate_model_types:
+    for model_type in models_to_fit:
         try:
             # ---------- Fit candidate model ----------#
             dhat_model_i, model_info_i = fit_demand_estimator(
@@ -1949,15 +1925,18 @@ def select_demand_model(
                 or p_opt_hat >= price_max - boundary_distance
             )
 
-            # minimum elasticity check ----------#
+            # ------ minimum elasticity check ----------#
 
             elasticity_valid = np.isfinite(vhat_opt) and vhat_opt >= minimum_elasticity
 
             # model-selection score ----------#
 
-            if np.isfinite(model_fit_score) and elasticity_valid:
+            # A successfully fitted model remains eligible for selection
+            # even when the estimated elasticity at p_opt_hat is below
+            # minimum_elasticity. elasticity_valid is retained as a
+            # diagnostic rather than used as a model-validity criterion.
+            if np.isfinite(model_fit_score):
                 selection_score = model_fit_score
-
             else:
                 selection_score = np.inf
 
@@ -2328,11 +2307,8 @@ def select_demand_model(
 
     valid_models = [
         model_type
-        for model_type, diagnostics in model_diagnostics.items()
-        if (
-            diagnostics["elasticity_valid"]
-            and np.isfinite(diagnostics["selection_score"])
-        )
+        for model_type in models_to_fit
+        if np.isfinite(model_diagnostics[model_type]["selection_score"])
     ]
 
     if len(valid_models) == 0:
@@ -2343,34 +2319,20 @@ def select_demand_model(
         }
 
         raise ValueError(
-            "None of the candidate models could be selected. "
-            f"Errors: {error_messages}"
+            "None of the fitted models are valid. " f"Errors: {error_messages}"
         )
-    # ---------- log-model challengers ----------#
+    # ---------- Identify valid challenger models ----------#
 
-    log_model_types = (
-        "log_log",
-        "log_quadratic",
-        "log_quadratic_level",
-    )
-
-    valid_log_models = [
-        model_type
-        for model_type in log_model_types
-        if (
-            model_type in model_diagnostics
-            and model_diagnostics[model_type]["elasticity_valid"]
-            and np.isfinite(model_diagnostics[model_type]["aic"])
-        )
+    valid_candidate_models = [
+        model_type for model_type in candidate_model_types if model_type in valid_models
     ]
 
-    best_log_model_type = None
+    best_candidate_model = None
 
-    if valid_log_models:
-
-        best_log_model_type = min(
-            valid_log_models,
-            key=lambda model_type: model_diagnostics[model_type]["aic"],
+    if valid_candidate_models:
+        best_candidate_model = min(
+            valid_candidate_models,
+            key=lambda model_type: model_diagnostics[model_type]["selection_score"],
         )
 
     # ------- calculate diagnostics relative to linear model ----- #
@@ -2385,7 +2347,7 @@ def select_demand_model(
         p=p_opt_linear,
     )
 
-    for model_type in candidate_model_types:
+    for model_type in models_to_fit:
 
         p_opt_model = model_diagnostics[model_type]["p_opt_hat"]
 
@@ -2417,79 +2379,75 @@ def select_demand_model(
             vhat_delta_from_linear
         )
 
-    # ---------- Linear RSS log-model trust diagnostic ----------#
+    # ---------- Linear-reference trust diagnostics ----------#
     #
-    # Quadratic is the conservative default model.
+    # Linear is the diagnostic reference model.
     #
-    # A log-family model is trusted only when:
+    # Candidate-model selection is permitted only when:
     #
-    # 1. the total linear-model log-RSS is below threshold, and
-    # 2. the absolute difference between low-side and high-side
-    #    linear log-RSS is below threshold.
+    # 1. the total Linear-model log-RSS is below threshold, and
+    # 2. the difference between the high- and low-price
+    #    Linear-model log-RSS is below threshold.
 
     linear_rss = model_diagnostics["linear"]["rss"]
 
     linear_rss_log_low = model_diagnostics["linear"]["rss_log_low"]
-
     linear_rss_log_high = model_diagnostics["linear"]["rss_log_high"]
 
     linear_rss_log_diff = abs(linear_rss_log_high - linear_rss_log_low)
 
-    log_model_rss_ok = (
+    linear_reference_ok = (
         np.isfinite(linear_rss)
         and np.isfinite(linear_rss_log_diff)
-        and linear_rss_log_diff < thr_rss_diff_max
         and linear_rss < thr_rss_max
+        and linear_rss_log_diff < thr_rss_diff_max
     )
 
-    # ============= Select model =============#
+    # ---------- Default selection ----------#
 
-    # Quadratic is the conservative default model.
-    selected_model_type = "quadratic"
+    # Use the default model unless the Linear-reference diagnostics
+    # permit model selection.
+    selected_model_type = default_model_type
 
-    # ---------- Optional log-model challenger ----------#
-    #
-    # A log-family model can replace quadratic only when:
-    #
-    # 1. at least one valid log model is available, and
-    # 2. the linear reference RSS diagnostics indicate
-    #    that the additional curvature can be trusted.
-    #
-    # If multiple valid log models are available,
-    # choose the one with the lowest AIC.
+    if linear_reference_ok and best_candidate_model is not None:
+        selected_model_type = best_candidate_model
 
-    if best_log_model_type is not None and log_model_rss_ok:
-        selected_model_type = best_log_model_type
+    # ---------- Boundary safeguard ----------#
 
     if (
-        selected_model_type != "quadratic"
-        and model_diagnostics[selected_model_type]["p_opt_linear_delta_frac"]
-        > p_opt_linear_delta_frac_max
-    ):
-        selected_model_type = "quadratic"
-
-    if (
-        selected_model_type != "quadratic"
+        selected_model_type != fallback_model_type
         and model_diagnostics[selected_model_type]["at_boundary"]
     ):
-        selected_model_type = "quadratic"
-
+        selected_model_type = fallback_model_type
     #### end model selecton
 
     # ---------- Selection diagnostics ----------#
 
-    for model_type in candidate_model_types:
+    for model_type in models_to_fit:
+
+        model_diagnostics[model_type]["thr_rss_max"] = float(thr_rss_max)
 
         model_diagnostics[model_type]["thr_rss_diff_max"] = float(thr_rss_diff_max)
-        model_diagnostics[model_type]["thr_rss_max"] = float(thr_rss_max)
+
+        model_diagnostics[model_type]["linear_rss"] = float(linear_rss)
+
         model_diagnostics[model_type]["linear_rss_log_diff"] = float(
             linear_rss_log_diff
         )
-        model_diagnostics[model_type]["logq_aic_improvement"] = float(
-            logq_vs_loglog_aic_improvement
+
+        model_diagnostics[model_type]["linear_reference_ok"] = bool(linear_reference_ok)
+
+        model_diagnostics[model_type]["default_model_type"] = default_model_type
+
+        model_diagnostics[model_type]["fallback_model_type"] = fallback_model_type
+
+        model_diagnostics[model_type]["best_candidate_model"] = best_candidate_model
+
+        model_diagnostics[model_type]["is_candidate"] = (
+            model_type in candidate_model_types
         )
-        model_diagnostics[model_type]["log_model_rss_ok"] = bool(log_model_rss_ok)
-        model_diagnostics[model_type]["best_log_model_type"] = best_log_model_type
+
+    # ---------- Retrieve selected fitted model ----------#
 
     dhat_model = fitted_models[selected_model_type]["dhat_model"]
     model_info = fitted_models[selected_model_type]["model_info"]
@@ -2686,7 +2644,8 @@ def mab_price_optimization_loop(
     b2_lambda_lql=0.0,
     b2_lambda_lql_lp=0.0,
     candidate_model_types=None,
-    primary_model_type=None,
+    fallback_model_type="linear",
+    default_model_type="linear",
     N_initial_prices=10,
     initial_prices=None,
     initial_demand=None,
@@ -2700,12 +2659,8 @@ def mab_price_optimization_loop(
     tilt_penalty_log_log=0.0,
     tilt_penalty_log_quadratic=0.0,
     tilt_penalty_log_quadratic_level=0.0,
-    linear_tilt_error_max=np.inf,
-    linear_tilt_imbalance_max=np.inf,
     thr_rss_diff_max=np.inf,
     thr_rss_max=np.inf,
-    logq_aic_improvement_min=2.0,
-    p_opt_linear_delta_frac_max=0.20,
     verbose=2,
 ):
     """Multi-armed bandit (MAB) price optimization loop.
@@ -2759,19 +2714,29 @@ def mab_price_optimization_loop(
             ["linear", "log_log", "log_quadratic", "log_quadratic_level"]. Additional supported
             models, such as "log_level" and "log_quadratic_level", may optionally be included.
 
-        primary_model_type : str or None, optional
-            Optional candidate model to use as the initial model choice
-            during each demand-model selection step.
+        fallback_model_type : str, default="linear"
+            Candidate model used as the fallback during demand-model
+            selection.
 
-            If None, the initial model is selected normally using the
-            configured selection criterion.
+            The fallback model is selected whenever the linear-reference
+            trust diagnostics fail or when the selected challenger fails
+            the boundary safeguard.
 
-            If specified, the model must be included in
-            candidate_model_types. Existing divergence and boundary
-            safeguards remain active and may still cause fallback to
-            linear.
+            The fallback model must be included in candidate_model_types.
 
-            Defaults to None.
+            Linear remains the diagnostic reference model regardless of
+            the configured fallback model.
+
+        default_model_type : str, optional
+            Model used by the demand-model selector when the Linear-reference
+            diagnostics do not permit challenger model selection.
+
+        thr_rss_diff_max : float, optional
+            Maximum allowable absolute difference between the
+            high-price and low-price log-demand RSS of the linear
+            reference model before challenger models are permitted.
+
+            Defaults to np.inf, which disables this guard.
 
         N_initial_prices : int, optional
             Number of distinct evenly spaced prices used during automatic
@@ -2980,6 +2945,8 @@ def mab_price_optimization_loop(
             f"({len(prices_initial)})."
         )
 
+    N_learn_earn = N_loop - len(prices_initial)
+
     # ---------- Validate initial demand ----------#
 
     if initial_demand is not None:
@@ -3005,8 +2972,28 @@ def mab_price_optimization_loop(
 
     # ------------Histories -------------------------#
 
-    p_history = []
-    d_history = []
+    # Initial exploration observations are available before
+    # the Learn-and-Earn phase begins.
+    p_history = list(prices_initial)
+
+    if initial_demand is not None:
+
+        d_history = [float(d) for d in initial_demand]
+
+    else:
+
+        d_history = [
+            round(
+                get_demand(
+                    demand_type,
+                    demand_params,
+                    pi,
+                    sigma_log=sigma_log,
+                ),
+                1,
+            )
+            for pi in prices_initial
+        ]
 
     selected_model_history = []
     model_fit_error_history = []
@@ -3018,11 +3005,24 @@ def mab_price_optimization_loop(
     p_opt_hat_history = []
     p_opt_vhat_history = []
     d_opt_hat_history = []
+    d_hat_history = []
     vhat_opt_history = []
     inv_umar_history = []
     profit_opt_history = []
     p_opt_hat_error_history = []
-    d_sigma0_history = []
+
+    d_sigma0_history = [
+        round(
+            get_demand(
+                demand_type,
+                demand_params,
+                pi,
+                sigma_log=0,
+            ),
+            1,
+        )
+        for pi in prices_initial
+    ]
 
     m_log_log_history = []
     m_log_quadratic_history = []
@@ -3048,83 +3048,381 @@ def mab_price_optimization_loop(
     profit_opt_hat = np.nan
     di_sigma0_i = np.nan
 
+    # ======== Sequential initial-exploration diagnostics ============#
+    # Estimate optimal price after each initial observation.
+    # Does not affect the MAB price-selection logic.
+
+    p_opt_hat_initial_history = []
+    d_hat_initial_history = []
+
+    min_unique_required = {
+        "linear": 2,
+        "log_level": 2,
+        "log_log": 2,
+        "quadratic": 3,
+        "log_quadratic": 3,
+        "log_quadratic_level": 3,
+        "log_quadratic_level_lp": 3,
+    }
+
+    required_models = set(candidate_model_types) | {
+        "linear",
+        default_model_type,
+        fallback_model_type,
+    }
+
+    n_unique_required = max(min_unique_required[m] for m in required_models)
+
+    for n_obs in range(1, len(prices_initial)):
+
+        p_partial = np.asarray(p_history[:n_obs], dtype=float)
+        d_partial = np.asarray(d_history[:n_obs], dtype=float)
+
+        if len(np.unique(p_partial)) < n_unique_required:
+            p_opt_hat_initial_history.append(np.nan)
+            d_hat_initial_history.append(np.nan)
+            continue
+
+        if price_repeat_aggregation:
+            p_fit_partial, d_fit_partial, counts_partial = aggregate_price_demand(
+                p=p_partial,
+                d=d_partial,
+            )
+        else:
+            p_fit_partial = p_partial
+            d_fit_partial = d_partial
+            counts_partial = np.ones(len(p_partial))
+
+        try:
+            (
+                dhat_partial,
+                _,
+                _,
+                _,
+                _,
+            ) = select_demand_model(
+                p=p_fit_partial,
+                d=d_fit_partial,
+                candidate_model_types=candidate_model_types,
+                default_model_type=default_model_type,
+                fallback_model_type=fallback_model_type,
+                price_min=price_min,
+                price_max=price_max,
+                c=c,
+                F=F,
+                sample_weights=np.asarray(counts_partial, dtype=float),
+                boundary_buffer=boundary_buffer,
+                selection_criterion=selection_criterion,
+                ridge_cv_linear=ridge_cv_linear,
+                ridge_cv_q=ridge_cv_q,
+                ridge_cv_lql=ridge_cv_lql,
+                huber=huber,
+                huber_epsilon=huber_epsilon,
+                b2_lambda_q=b2_lambda_q,
+                b2_lambda_lql=b2_lambda_lql,
+                b2_lambda_lql_lp=b2_lambda_lql_lp,
+                tilt_penalty_linear=tilt_penalty_linear,
+                tilt_penalty_log_level=tilt_penalty_log_level,
+                tilt_penalty_log_log=tilt_penalty_log_log,
+                tilt_penalty_log_quadratic=tilt_penalty_log_quadratic,
+                tilt_penalty_log_quadratic_level=tilt_penalty_log_quadratic_level,
+                thr_rss_diff_max=thr_rss_diff_max,
+                thr_rss_max=thr_rss_max,
+            )
+
+            d_grid_partial = np.asarray(dhat_partial(p_grid), dtype=float)
+            profit_grid_partial = (p_grid - c) * d_grid_partial - F
+
+            valid = (
+                np.isfinite(d_grid_partial)
+                & np.isfinite(profit_grid_partial)
+                & (d_grid_partial >= 0)
+            )
+
+            if np.any(valid):
+                profit_grid_partial = np.where(valid, profit_grid_partial, -np.inf)
+                p_est = round(float(p_grid[np.argmax(profit_grid_partial)]), 2)
+            else:
+                p_est = np.nan
+
+        except (ValueError, FloatingPointError, np.linalg.LinAlgError):
+            p_est = np.nan
+
+        p_opt_hat_initial_history.append(p_est)
+
+        if np.isfinite(p_est):
+            d_hat_initial_history.append(round(float(dhat_partial(p_partial[-1])), 1))
+        else:
+            d_hat_initial_history.append(np.nan)
+
+    # ======== Initial demand-model fit ===============================#
+    #  - initialize with initial_prices and demand
+
+    if price_repeat_aggregation:
+
+        p_fit, d_fit, counts = aggregate_price_demand(
+            p=p_history,
+            d=d_history,
+        )
+
+        p_fit = np.asarray(p_fit, dtype=float)
+        d_fit = np.asarray(d_fit, dtype=float)
+        counts = np.asarray(counts, dtype=float)
+
+    else:
+
+        p_fit = np.asarray(p_history, dtype=float)
+        d_fit = np.asarray(d_history, dtype=float)
+
+        counts = np.ones(
+            len(p_fit),
+            dtype=float,
+        )
+
+    sample_weights = counts
+
+    try:
+        (
+            dhat_model,
+            model_info,
+            selected_model_type,
+            model_diagnostics,
+            fitted_models,
+        ) = select_demand_model(
+            p=p_fit,
+            d=d_fit,
+            candidate_model_types=candidate_model_types,
+            default_model_type=default_model_type,
+            fallback_model_type=fallback_model_type,
+            price_min=price_min,
+            price_max=price_max,
+            c=c,
+            F=F,
+            sample_weights=sample_weights,
+            boundary_buffer=boundary_buffer,
+            selection_criterion=selection_criterion,
+            ridge_cv_linear=ridge_cv_linear,
+            ridge_cv_q=ridge_cv_q,
+            ridge_cv_lql=ridge_cv_lql,
+            huber=huber,
+            huber_epsilon=huber_epsilon,
+            b2_lambda_q=b2_lambda_q,
+            b2_lambda_lql=b2_lambda_lql,
+            b2_lambda_lql_lp=b2_lambda_lql_lp,
+            tilt_penalty_linear=tilt_penalty_linear,
+            tilt_penalty_log_level=tilt_penalty_log_level,
+            tilt_penalty_log_log=tilt_penalty_log_log,
+            tilt_penalty_log_quadratic=tilt_penalty_log_quadratic,
+            tilt_penalty_log_quadratic_level=tilt_penalty_log_quadratic_level,
+            thr_rss_diff_max=thr_rss_diff_max,
+            thr_rss_max=thr_rss_max,
+        )
+
+    except ValueError as exc:
+        raise ValueError(f"Initial demand-model selection failed: {exc}") from exc
+
+    # ---------- Initial estimated optimal price ----------#
+
+    d_grid_hat = np.asarray(
+        dhat_model(p_grid),
+        dtype=float,
+    )
+
+    profit_grid_hat = (p_grid - c) * d_grid_hat - F
+
+    valid_grid = (
+        np.isfinite(d_grid_hat) & np.isfinite(profit_grid_hat) & (d_grid_hat >= 0)
+    )
+
+    if not np.any(valid_grid):
+        raise ValueError(
+            "Initial demand model produced no valid " "profit-grid predictions."
+        )
+
+    profit_grid_valid = np.where(
+        valid_grid,
+        profit_grid_hat,
+        -np.inf,
+    )
+
+    i_opt = int(np.argmax(profit_grid_valid))
+
+    p_opt_hat = round(
+        float(p_grid[i_opt]),
+        2,
+    )
+
+    d_opt_hat = round(
+        float(d_grid_hat[i_opt]),
+        1,
+    )
+
+    profit_opt_hat = round(
+        float(profit_grid_hat[i_opt]),
+        2,
+    )
+
+    # ---------- Initial fit diagnostics ----------#
+
+    vhat_opt_i = round(
+        float(
+            np.asarray(
+                vhat_calculator(
+                    model_info=model_info,
+                    p=p_opt_hat,
+                )
+            ).reshape(
+                -1
+            )[0]
+        ),
+        2,
+    )
+
+    inv_umar_i = round(
+        p_opt_hat / (p_opt_hat - c),
+        2,
+    )
+
+    if not np.isfinite(vhat_opt_i) or np.isclose(vhat_opt_i, 1.0):
+        p_opt_vhat_i = np.nan
+    else:
+        p_opt_vhat_i = round(
+            c * vhat_opt_i / (vhat_opt_i - 1.0),
+            2,
+        )
+
+    p_opt_hat_error = round(
+        abs(p_opt_hat - p_opt),
+        2,
+    )
+
+    # ---------- Warn if estimated optimum is capped by price range ----------#
+
+    if np.isclose(p_opt_hat, price_max):
+
+        print(
+            f"\nWARNING: Estimated optimal price is at the maximum "
+            f"allowed price (${price_max:.2f}). "
+            f"The unconstrained optimal price may be above the "
+            f"current price range. The returned estimate is capped "
+            f"at ${price_max:.2f}. "
+            f"Estimated elasticity at the returned price is "
+            f"{vhat_opt_i:.2f}. "
+            f"Consider additional observations to obtain a more "
+            f"reliable optimal-price estimate."
+        )
+
+    # ---------- model selection diagnostics ----------#
+
+    m_log_log = model_diagnostics[selected_model_type].get(
+        "m_log_log",
+        np.nan,
+    )
+
+    m_log_quadratic = model_diagnostics[selected_model_type].get(
+        "m_log_quadratic",
+        np.nan,
+    )
+
+    markup_pct_delta = model_diagnostics[selected_model_type].get(
+        "markup_pct_delta",
+        np.nan,
+    )
+
+    # ---------- Store initial model fit ----------#
+
+    d_hat_history.extend(d_hat_initial_history)
+
+    d_hat_history.append(round(float(dhat_model(p_history[-1])), 1))
+
+    selected_model_history.append(selected_model_type)
+
+    model_fit_error_history.append(model_diagnostics[selected_model_type]["fit_error"])
+
+    p_opt_hat_history.extend(p_opt_hat_initial_history)
+    p_opt_hat_history.append(p_opt_hat)
+    p_opt_vhat_history.append(p_opt_vhat_i)
+    d_opt_hat_history.append(d_opt_hat)
+    vhat_opt_history.append(vhat_opt_i)
+    inv_umar_history.append(inv_umar_i)
+    profit_opt_history.append(profit_opt_hat)
+    p_opt_hat_error_history.append(p_opt_hat_error)
+
+    m_log_log_history.append(m_log_log)
+    m_log_quadratic_history.append(m_log_quadratic)
+    markup_pct_delta_history.append(markup_pct_delta)
+
+    model_diagnostics_history.append(model_diagnostics)
+    fitted_models_history.append(fitted_models)
+
     # ======== MAB loop ===============================#
 
     repeat_count = 0
     prev_pi = None
 
-    for i in range(N_loop):
+    for i in range(N_learn_earn):
+
+        i_total = len(prices_initial) + i
 
         if verbose > 0:
-            print(f"i = {i}", end=", ")
+            print(
+                f"i = {i_total}, " f"i_learn_earn = {i}",
+                end=", ",
+            )
 
         # ---------- Price selection ----------#
 
-        if i < len(prices_initial):
+        # ---------- Select local exploration price ----------#
+        if repeat_count == 0 or repeat_count >= N_price_repeat:
+            if not np.isfinite(p_opt_hat):
+                raise ValueError(
+                    "p_opt_hat must be finite after the initial "
+                    "exploration before local price exploration begins."
+                )
 
-            # Use the initial exploration path exactly as constructed
-            # or supplied by the user.
-            pi = prices_initial[i]
+            # Start of a new +/- exploration pair:
+            # freeze the latest p_opt_hat as the pair anchor.
+            if price_direction == 1:
+
+                p_opt_anchor = float(p_opt_hat)
+
+            # Both sides of the pair are centered on the same anchor.
+            pi = p_opt_anchor * (1.0 + price_direction * price_delta)
+
+            pi = float(
+                np.clip(
+                    round(pi, 2),
+                    price_min,
+                    price_max,
+                )
+            )
+
+            # Alternate direction for the next price block.
+            price_direction *= -1
+
+            # First observation at this new price.
+            repeat_count = 1
 
         else:
 
-            # ---------- Select local exploration price ----------#
-            if repeat_count == 0 or repeat_count >= N_price_repeat:
-                if not np.isfinite(p_opt_hat):
-                    raise ValueError(
-                        "p_opt_hat must be finite after the initial "
-                        "exploration before local price exploration begins."
-                    )
+            # Repeat the previously selected local exploration price.
+            pi = prev_pi
 
-                # Start of a new +/- exploration pair:
-                # freeze the latest p_opt_hat as the pair anchor.
-                if price_direction == 1:
-
-                    p_opt_anchor = float(p_opt_hat)
-
-                # Both sides of the pair are centered on the same anchor.
-                pi = p_opt_anchor * (1.0 + price_direction * price_delta)
-
-                pi = float(
-                    np.clip(
-                        round(pi, 2),
-                        price_min,
-                        price_max,
-                    )
-                )
-
-                # Alternate direction for the next price block.
-                price_direction *= -1
-
-                # First observation at this new price.
-                repeat_count = 1
-
-            else:
-
-                # Repeat the previously selected local exploration price.
-                pi = prev_pi
-
-                repeat_count += 1
+            repeat_count += 1
 
         prev_pi = pi
 
         # -------- Simulated observed demand ------------------#
 
-        if initial_demand is not None and i < len(initial_demand):
-
-            di = float(initial_demand[i])
-
-        else:
-
-            di = round(
-                get_demand(
-                    demand_type,
-                    demand_params,
-                    pi,
-                    sigma_log=sigma_log,
-                ),
-                1,
-            )
+        di = round(
+            get_demand(
+                demand_type,
+                demand_params,
+                pi,
+                sigma_log=sigma_log,
+            ),
+            1,
+        )
 
         # Noiseless demand is used only as a simulation diagnostic.
         # It is not used for model fitting or model selection.
@@ -3194,7 +3492,7 @@ def mab_price_optimization_loop(
             )
         # ---------- Optional local price window ----------#
 
-        if price_local_window and i >= len(prices_initial) and np.isfinite(p_opt_hat):
+        if price_local_window and np.isfinite(p_opt_hat):
 
             p_fit, d_fit, counts = price_filter_local_window(
                 p_fit=p_fit,
@@ -3214,27 +3512,6 @@ def mab_price_optimization_loop(
         # unit weight.
         sample_weights = counts
 
-        # ---- Wait until enough unique prices are available -------#
-
-        N_unique_prices = len(np.unique(p_fit))
-
-        if N_unique_prices < min_fit_obs:
-
-            if verbose > 1:
-                print("selected_model = none, p_opt_hat = nan")
-
-            selected_model_history.append(None)
-            model_fit_error_history.append(None)
-            p_opt_hat_history.append(np.nan)
-            p_opt_vhat_history.append(np.nan)
-            d_opt_hat_history.append(np.nan)
-            vhat_opt_history.append(np.nan)
-            inv_umar_history.append(np.nan)
-            profit_opt_history.append(np.nan)
-            p_opt_hat_error_history.append(np.nan)
-
-            continue
-
         # ------ Fit and select the demand model -------------
 
         try:
@@ -3248,7 +3525,8 @@ def mab_price_optimization_loop(
                 p=p_fit,
                 d=d_fit,
                 candidate_model_types=candidate_model_types,
-                primary_model_type=primary_model_type,
+                default_model_type=default_model_type,
+                fallback_model_type=fallback_model_type,
                 price_min=price_min,
                 price_max=price_max,
                 c=c,
@@ -3269,30 +3547,13 @@ def mab_price_optimization_loop(
                 tilt_penalty_log_log=tilt_penalty_log_log,
                 tilt_penalty_log_quadratic=tilt_penalty_log_quadratic,
                 tilt_penalty_log_quadratic_level=tilt_penalty_log_quadratic_level,
-                linear_tilt_error_max=linear_tilt_error_max,
                 thr_rss_diff_max=thr_rss_diff_max,
                 thr_rss_max=thr_rss_max,
-                linear_tilt_imbalance_max=linear_tilt_imbalance_max,
-                logq_aic_improvement_min=logq_aic_improvement_min,
-                p_opt_linear_delta_frac_max=p_opt_linear_delta_frac_max,
             )
-
         except ValueError as exc:
-
-            if verbose > 1:
-                print(f"selected_model = none, " f"model selection failed: {exc}")
-
-            selected_model_history.append(None)
-            model_fit_error_history.append(None)
-            p_opt_hat_history.append(np.nan)
-            p_opt_vhat_history.append(np.nan)
-            d_opt_hat_history.append(np.nan)
-            vhat_opt_history.append(np.nan)
-            inv_umar_history.append(np.nan)
-            profit_opt_history.append(np.nan)
-            p_opt_hat_error_history.append(np.nan)
-
-            continue
+            raise ValueError(
+                f"Demand-model selection failed at MAB iteration i={i_total}: "
+            ) from exc
 
         _selected_model_error = model_diagnostics[selected_model_type]["fit_error"]
 
@@ -3341,6 +3602,7 @@ def mab_price_optimization_loop(
             p_opt_hat_history.append(np.nan)
             p_opt_vhat_history.append(np.nan)
             d_opt_hat_history.append(np.nan)
+            d_hat_history.append(np.nan)
             vhat_opt_history.append(np.nan)
             inv_umar_history.append(np.nan)
             profit_opt_history.append(np.nan)
@@ -3369,6 +3631,12 @@ def mab_price_optimization_loop(
         profit_opt_hat = round(
             float(profit_grid_hat[i_opt]),
             2,
+        )
+
+        # ------- Estimated demand at the current price ----------------#
+        d_hat = round(
+            float(dhat_model(pi)),
+            1,
         )
 
         # ---- Elasticity at the estimated optimum  -----#
@@ -3418,6 +3686,7 @@ def mab_price_optimization_loop(
         p_opt_hat_history.append(p_opt_hat)
         p_opt_vhat_history.append(p_opt_vhat_i)
         d_opt_hat_history.append(d_opt_hat)
+        d_hat_history.append(d_hat)
         vhat_opt_history.append(vhat_opt_i)
         inv_umar_history.append(inv_umar_i)
         profit_opt_history.append(profit_opt_hat)
@@ -3430,7 +3699,7 @@ def mab_price_optimization_loop(
         fitted_models_history.append(fitted_models)
 
         # ------------- loop verbose prints ----------------#
-        if verbose > 1 and i < N_loop - 1:
+        if verbose > 1 and i < N_learn_earn - 1:
             print(
                 f"selected_model = {selected_model_type}",
                 f", model_fit_error = {round(model_diagnostics[selected_model_type]["fit_error"],2)}",
@@ -3445,6 +3714,25 @@ def mab_price_optimization_loop(
             )
 
     # afer loop results
+
+    assert len(p_history) == N_loop, (
+        f"p_history has {len(p_history)} observations; " f"expected N_loop={N_loop}."
+    )
+
+    assert len(d_history) == N_loop, (
+        f"d_history has {len(d_history)} observations; " f"expected N_loop={N_loop}."
+    )
+
+    assert len(d_sigma0_history) == N_loop, (
+        f"d_sigma0_history has {len(d_sigma0_history)} observations; "
+        f"expected N_loop={N_loop}."
+    )
+
+    assert len(p_opt_hat_history) == N_loop, (
+        f"p_opt_hat_history has {len(p_opt_hat_history)} entries; "
+        f"expected N_loop={N_loop}."
+    )
+
     if verbose > 0:
         print(
             f"selected_model = {selected_model_type}",
@@ -3467,6 +3755,7 @@ def mab_price_optimization_loop(
         "selected_model": selected_model_history,
         "p_opt_hat_history": p_opt_hat_history,
         "d_opt_hat_history": d_opt_hat_history,
+        "d_hat_history": d_hat_history,
         "p_opt_hat_error_history": p_opt_hat_error_history,
         # final selected model
         "selected_model_type": selected_model_type,
